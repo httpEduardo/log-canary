@@ -1,14 +1,71 @@
-# Log Canary
+# log-canary
 
-Log Canary scans web access logs and highlights suspicious patterns like SQLi, XSS, and traversal.
+Scans web server access logs for requests that look like attacks — SQL injection, XSS, path traversal, command injection, Log4Shell probes and known scanners — and summarizes who sent them and whether the server answered successfully.
 
-## Quick start
+When something feels off on a web server, the access log is usually the first place to look, but grepping for `union select` by hand misses anything URL-encoded and drowns you in noise. log-canary parses each line properly, decodes the request before matching, and gives you a short report you can act on.
+
+## Detections
+
+| Category | Looks for | Checked in |
+|----------|-----------|------------|
+| `sqli` | `union select`, `' or '1'='1`, `sleep(`, `benchmark(`, `information_schema` | request |
+| `xss` | `<script`, `javascript:`, inline event handlers, `<svg on…>` | request |
+| `traversal` | `../` and `..\` | request |
+| `cmd-injection` | `; id`, `| whoami`, backticks, `$(…)`, `/bin/sh` | request |
+| `sensitive-file` | `/etc/passwd`, `win.ini`, `/.env`, `/.git/`, `wp-config.php` | request |
+| `jndi` | `${jndi:` (Log4Shell) | request and User-Agent |
+| `scanner` | sqlmap, Nikto, Nuclei, Nmap, gobuster, ffuf, WPScan… | User-Agent |
+
+Requests are percent-decoded (twice, to catch double encoding) and `+` is read as a space before matching, so `union+select` and `%3Cscript%3E` are caught. The User-Agent is matched separately, so a browser string can't trigger path-based rules.
+
+The report also counts how many hits in each category got a **2xx response**. A blocked `403` is noise; a `200` on a SQL injection payload is worth a closer look.
+
+## Usage
 
 ```bash
-cargo run -- --input sample.log --top 5
+cargo run --release -- --input /var/log/nginx/access.log --top 10
 ```
 
-## Output
+```text
+Lines scanned: 8 (0 not in a recognized log format)
+Suspicious requests: 5
 
-- Top IPs with suspicious hits.
-- Pattern counts and sample lines.
+Top sources:
+  10.0.0.5                                 2
+  10.0.0.11                                1
+  10.0.0.7                                 1
+  2001:db8::7                              1
+
+By category (hits / answered with 2xx):
+  sqli               2 / 2
+  jndi               1 / 1
+  scanner            1 / 1
+  sensitive-file     1 / 0
+  traversal          1 / 0
+  xss                1 / 1
+
+Samples:
+  [sqli           200] 10.0.0.5 - - [14/Jan/2026:12:00:01 +0000] "GET /search?q=union+select+1,2,3 HTTP/1.1" ...
+```
+
+Options:
+
+- `--input`, `-i` — access log in Common or Combined Log Format (nginx and Apache defaults)
+- `--top`, `-n` — how many sources and samples to show (default 5)
+
+Exit codes: `0` nothing suspicious, `1` suspicious requests found, `2` bad arguments or unreadable file.
+
+## Building
+
+```bash
+cargo build --release
+cargo test
+```
+
+## Limitations
+
+Signature matching finds the obvious and the lazy. It won't catch novel payloads or attacks sent in POST bodies (which access logs don't record), and a match doesn't mean the attack worked. Use it for triage and as a starting point for investigation.
+
+## License
+
+[MIT](LICENSE)
